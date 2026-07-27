@@ -1,11 +1,20 @@
 {
     "name": "agihalo-node-sdk",
-    "version": "0.1.0",
-    "description": "Implementing Automated X402 Payments via Halo SDK Wrapper for Gemini LLM for Decentralized Agents",
+    "version": "0.1.1",
+    "description": "HALO SDK for Project Authentication, OAuth, Agent Memory, model routing, and x402 payments",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
+    "homepage": "https://docs.agihalo.com/sdks/node/",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/AGIHALO/halo-node-sdk.git"
+    },
+    "engines": {
+        "node": ">=18"
+    },
     "scripts": {
-        "build": "tsc"
+        "build": "tsc",
+        "test": "npm run build && node --test tests/*.test.js"
     },
     "dependencies": {
         "@google/generative-ai": "^0.24.1",
