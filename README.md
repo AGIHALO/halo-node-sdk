@@ -1,55 +1,98 @@
-# HALO Node.js SDK: Automated X402 Payments for Decentralized Agents
+# HALO Node.js SDK
 
-Implementing Automated X402 Payments via Halo SDK Wrapper for Gemini LLM. Designed for **Decentralized Agents** and AI Services.
+The official Node.js client for HALO Project Authentication, OAuth Apps,
+long-term Memory, and server-driven x402 payments.
 
-The official Node.js client for Halo API, featuring **x402 auto-payment middleware** that seamlessly handles payment requirements for AI models.
-
-> **👼 proper noun [HALO (Hyper-Available Lifeline Oracle)]**: 
+> **👼 proper noun [HALO (Hyper-Available Lifeline Oracle)]**:
 > A protocol where a dormant agent receives a temporary intelligence boost ("HALO") to survive a resource crunch (402 Error).
 
 ## Installation
 
 ```bash
-npm install agihalo-node-sdk ethers
+npm install agihalo-node-sdk
 ```
 
-## Quick Start: Auto-Payment (Recommended)
+Node.js 18 or newer is required.
 
-The easiest way to use HALO. Just wrap your existing model with `haloSystem`. If a 402 error occurs, it automatically signs the payment using your private key and retries.
+## What's included in 0.2.0
+
+- Project user signup, password sessions, rotating refresh tokens, recovery,
+  JWKS, and upstream provider login
+- OAuth App authorization-code, PKCE, refresh-token, and user-info flows
+- Direct Memory capture, retrieve, deletion, and function execution
+- Server-driven x402 signing that uses the `payTo`, network, asset, amount, and
+  timeout returned by `https://api.agihalo.com`
+
+## Model Gateway
+
+HALO exposes an OpenAI-compatible production endpoint. Use the OpenAI package
+for model calls and this package for HALO Authentication, Memory, and x402
+helpers.
+
+```bash
+npm install openai
+```
 
 ```typescript
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from "openai";
+
+const halo = new OpenAI({
+    apiKey: process.env.HALO_API_KEY,
+    baseURL: "https://api.agihalo.com/openai/v1",
+});
+
+const response = await halo.chat.completions.create({
+    model: "gpt-5-mini",
+    messages: [{ role: "user", content: "Reply with one word: ready" }],
+});
+console.log(response.choices[0].message.content);
+```
+
+## x402 Auto-Payment
+
+Wrap a current `@google/genai` Models client with `haloSystem`. When the HALO
+API returns 402, the wrapper signs the server-provided payment requirement and
+retries the original model, contents, config, and request headers with the
+payment proof.
+
+```bash
+npm install @google/genai
+```
+
+```typescript
+import { GoogleGenAI } from "@google/genai";
 import { haloSystem } from "agihalo-node-sdk";
 
-// 1. Setup Client
-const genAI = new GoogleGenerativeAI("sk-..."); // Get your key at www.apihalo.com
-const model = genAI.getGenerativeModel({ 
-    model: "gemini-2.0-flash-exp" 
-}, {
-    baseUrl: "https://api.agihalo.com"
+const apiKey = process.env.HALO_API_KEY!;
+const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+        baseUrl: "https://api.agihalo.com",
+    },
 });
 
-// 2. Attach HALO System (The Magic ✨)
-// Just pass your private key. 402 errors will be auto-resolved.
-const haloModel = haloSystem(model, {
-    privateKey: "0xYOUR_PRIVATE_KEY",
-    apiKey: "sk-..." // Get your key at www.apihalo.com
+const haloModels = haloSystem(ai.models, {
+    privateKey: process.env.HALO_WALLET_PRIVATE_KEY!,
+    apiKey,
 });
 
-// 3. Use as usual
-// If credits run out, it automatically pays 1 USDC and returns the result.
-async function run() {
-    const result = await haloModel.generateContent("Hello, Halo!");
-    console.log(result.response.text());
-}
-run();
+const response = await haloModels.generateContent({
+    model: "gemini-3.5-flash",
+    contents: "Hello, HALO!",
+});
+console.log(response.text);
 ```
+
+The SDK does not contain a platform receive-wallet constant. It signs the
+`payTo` value delivered by the trusted HALO 402 response, so a server-side
+wallet rotation does not require a Node package update.
 
 ## Project Authentication
 
-Use `HaloAuthClient` in an OEM or application frontend with the Project
+Use `HaloAuthClient` in a Node.js application or BFF with the Project
 publishable key. The client returns tokens to your application but never stores
-them.
+them. Replace the stored refresh token after every successful refresh because
+HALO rotates it.
 
 ```typescript
 import { HaloAuthClient } from "agihalo-node-sdk";
@@ -67,37 +110,54 @@ const refreshed = await auth.refreshSession(session.refresh_token);
 const user = await auth.getUser(refreshed.access_token);
 ```
 
-For Google, Apple, GitHub, or Microsoft sign-in, create an S256 PKCE pair in
-your app and open the returned URL:
+For Google, Apple, GitHub, or Microsoft sign-in, generate an S256 PKCE pair and
+state, retain the verifier and state in the application session, then open the
+provider authorization URL:
 
 ```typescript
+import {
+    generateOAuthState,
+    generatePkcePair,
+} from "agihalo-node-sdk";
+
+const pkce = generatePkcePair();
+const state = generateOAuthState();
+
 const authorizationUrl = auth.buildProviderAuthorizeUrl({
     provider: "google",
     redirectTo: "https://app.example.com/auth/callback",
-    codeChallenge,
+    codeChallenge: pkce.challenge,
     state,
 });
 
-// After HALO redirects back with a one-time code:
+// After validating the returned state:
 const providerSession = await auth.exchangeProviderCode({
     code,
-    codeVerifier,
+    codeVerifier: pkce.verifier,
     redirectTo: "https://app.example.com/auth/callback",
 });
 ```
+
+In a web application, keep refresh tokens in a Secure, HttpOnly,
+SameSite-protected application cookie behind a BFF. Do not place access or
+refresh tokens in URLs, logs, localStorage, or sessionStorage.
 
 Services registered as HALO OAuth Apps use `HaloOAuthClient`. Keep a
 confidential client secret in a trusted server runtime; public clients use PKCE
 without a secret.
 
 ```typescript
-import { HaloOAuthClient } from "agihalo-node-sdk";
+import {
+    HaloOAuthClient,
+    generateOAuthState,
+} from "agihalo-node-sdk";
 
 const oauth = new HaloOAuthClient({
     clientId: "halo_client_...",
     clientSecret: "server-only-secret",
 });
 
+const state = generateOAuthState();
 const authorizeUrl = oauth.buildAuthorizeUrl({
     redirectUri: "https://service.example.com/callback",
     scopes: ["profile", "email"],
@@ -259,7 +319,7 @@ import { HaloPaymentTools } from "agihalo-node-sdk";
 const tools = new HaloPaymentTools({
     privateKey: "0xTEE_PRIVATE_KEY",
     apiKey: "sk-...",
-    haloUrl: "https://api.agihalo.com"
+    haloUrl: "https://api.agihalo.com",
 });
 
 // 2. Agent Logic (Simulation)
@@ -279,7 +339,7 @@ try {
         console.log("Agent: 'Judge approved. Signing payment...'");
         
         // 4. Generate Payment Signature
-        // (In real scenario, parse 'requirement' from 402 error header)
+        // Parse requirement from the trusted payment-required response header.
         const signature = await tools.signPayment(requirement);
         
         // 5. Retry with Proof
@@ -294,10 +354,12 @@ try {
 1.  **Halo System (Auto Mode)**:
     *   Wraps the model instance with a Proxy.
     *   Intercepts `402 Payment Required` errors.
-    *   **Fast Track**: If `privateKey` is provided directly, it skips the Judge and immediately signs/pays (latency optimized).
-    *   **Rescue Track**: If configured without a direct key, it consults the Judge first.
+    *   Uses the payment recipient and settlement parameters returned by the HALO API instead of a wallet embedded in the SDK.
+    *   Retries the original model request with `Payment-Signature`; it does not replace the requested model.
+    *   Signs immediately with the explicitly configured private key.
 
 2.  **Halo Payment Tools (Manual Mode)**:
     *   `consultJudge(context, amount)`: Uses `x-halo-rescue` header to access the Judge model for free.
     *   `signPayment(requirement)`: Generates an EIP-712 signature for USDC TransferWithAuthorization.
-# halo-node-sdk
+
+Create API keys and manage projects at [app.agihalo.com](https://app.agihalo.com/).

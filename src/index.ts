@@ -1,8 +1,10 @@
 import { ethers } from "ethers";
 import { HaloAPIError } from "./errors";
+import { HALO_SDK_VERSION } from "./version";
 
 export { HaloAPIError } from "./errors";
 export * from "./auth";
+export { HALO_SDK_VERSION } from "./version";
 
 const DEFAULT_HALO_URL = "https://api.agihalo.com";
 const HALO_SDK_NAME = "agihalo-node-sdk";
@@ -17,6 +19,47 @@ export interface HaloConfig {
     apiKey?: string;
     haloUrl?: string;
     rpcUrl?: string;
+}
+
+export interface HaloX402Price {
+    amount?: string | number;
+    asset?: string;
+    extra?: {
+        name?: string;
+        version?: string;
+        [key: string]: unknown;
+    };
+    [key: string]: unknown;
+}
+
+export interface HaloX402PaymentRequirement {
+    scheme?: string;
+    network?: string;
+    amount?: string | number;
+    maxAmountRequired?: string | number;
+    payTo?: string;
+    maxTimeoutSeconds?: string | number;
+    asset?: string;
+    extra?: {
+        name?: string;
+        version?: string;
+        [key: string]: unknown;
+    };
+    price?: HaloX402Price;
+    [key: string]: unknown;
+}
+
+export interface HaloX402PaymentRequired {
+    x402Version?: number;
+    resource?:
+        | string
+        | {
+              description?: string;
+              url?: string;
+              [key: string]: unknown;
+          };
+    accepts: HaloX402PaymentRequirement[];
+    [key: string]: unknown;
 }
 
 export interface HaloMemoryConfig {
@@ -187,6 +230,7 @@ const cleanTopicList = (topics: string[] | undefined): string[] | undefined => {
 export function haloMemoryHeaders(config: HaloMemoryConfig): Record<string, string> {
     const headers: Record<string, string> = {
         "x-halo-sdk": HALO_SDK_NAME,
+        "x-halo-sdk-version": HALO_SDK_VERSION,
         "x-halo-project-key": cleanMemoryProjectKey(config.projectKey),
         "x-halo-end-user-key": cleanMemoryEndUserKey(config.endUserKey),
     };
@@ -470,6 +514,7 @@ export class HaloMemoryClient {
             "Authorization": `Bearer ${this.apiKey}`,
             "Content-Type": "application/json",
             "x-halo-sdk": HALO_SDK_NAME,
+            "x-halo-sdk-version": HALO_SDK_VERSION,
         };
     }
 
@@ -577,7 +622,9 @@ export class HaloPaymentTools {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "x-halo-rescue": "true"
+                "x-halo-rescue": "true",
+                "x-halo-sdk": HALO_SDK_NAME,
+                "x-halo-sdk-version": HALO_SDK_VERSION,
             },
             body: JSON.stringify({
                 contents: [{ parts: [{ text: `
@@ -598,20 +645,116 @@ Question: Approve this payment? Reply ONLY with 'YES' or 'NO'.`
     /**
      * [PAID] 승인 후 실제 서명을 생성하는 도구. (EIP-712)
      */
-    async signPayment(requirement: any): Promise<string> {
+    async signPayment(
+        requirement: HaloX402PaymentRequirement
+    ): Promise<string> {
         if (!this.wallet) throw new Error("No private key for signing.");
+        if (!requirement || typeof requirement !== "object") {
+            throw new Error("requirement must be an object");
+        }
+        if (requirement.scheme !== "exact") {
+            throw new Error(
+                "Only exact x402 payment requirements are supported"
+            );
+        }
 
-        const amount = BigInt(requirement.amount || requirement.maxAmountRequired);
-        const chainId = 8453; // Base
+        const price =
+            requirement.price && typeof requirement.price === "object"
+                ? requirement.price
+                : {};
+        const rawAmount =
+            requirement.amount ??
+            requirement.maxAmountRequired ??
+            price.amount;
+        const rawAsset = requirement.asset ?? price.asset;
+        const rawPayTo = requirement.payTo;
+
+        if (rawAmount === undefined) {
+            throw new Error("x402 payment amount is required");
+        }
+        if (rawAsset === undefined) {
+            throw new Error("x402 payment asset is required");
+        }
+        if (rawPayTo === undefined) {
+            throw new Error("x402 payment recipient is required");
+        }
+
+        let amount: bigint;
+        if (typeof rawAmount === "number") {
+            if (!Number.isSafeInteger(rawAmount)) {
+                throw new Error(
+                    "x402 payment amount must be a positive integer"
+                );
+            }
+            amount = BigInt(rawAmount);
+        } else if (/^\d+$/.test(rawAmount)) {
+            amount = BigInt(rawAmount);
+        } else {
+            throw new Error("x402 payment amount must be a positive integer");
+        }
+        if (amount <= 0n) {
+            throw new Error(
+                "x402 payment amount must be greater than zero"
+            );
+        }
+
+        const network = requirement.network;
+        let chainId: number;
+        if (network === "base") {
+            chainId = 8453;
+        } else {
+            const match =
+                typeof network === "string"
+                    ? /^eip155:(\d+)$/.exec(network)
+                    : null;
+            chainId = match ? Number(match[1]) : Number.NaN;
+        }
+        if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+            throw new Error(
+                "x402 network must be base or an eip155 CAIP-2 identifier"
+            );
+        }
+
+        const rawTimeout = requirement.maxTimeoutSeconds;
+        const maxTimeoutSeconds =
+            typeof rawTimeout === "number"
+                ? rawTimeout
+                : typeof rawTimeout === "string" && /^\d+$/.test(rawTimeout)
+                  ? Number(rawTimeout)
+                  : Number.NaN;
+        if (
+            !Number.isSafeInteger(maxTimeoutSeconds) ||
+            maxTimeoutSeconds <= 0
+        ) {
+            throw new Error(
+                "x402 maxTimeoutSeconds must be a positive integer"
+            );
+        }
+
+        const extra =
+            requirement.extra && typeof requirement.extra === "object"
+                ? requirement.extra
+                : price.extra && typeof price.extra === "object"
+                  ? price.extra
+                  : {};
+        const asset = ethers.getAddress(rawAsset);
+        const payTo = ethers.getAddress(rawPayTo);
         const validAfter = Math.floor(Date.now() / 1000) - 60;
-        const validBefore = Math.floor(Date.now() / 1000) + 3600;
+        const validBefore =
+            Math.floor(Date.now() / 1000) + maxTimeoutSeconds;
         const nonce = ethers.hexlify(ethers.randomBytes(32));
 
         const domain = {
-            name: requirement.extra?.name || "USD Coin",
-            version: requirement.extra?.version || "2",
-            chainId: chainId,
-            verifyingContract: requirement.asset
+            name:
+                typeof extra.name === "string" && extra.name
+                    ? extra.name
+                    : "USD Coin",
+            version:
+                typeof extra.version === "string" && extra.version
+                    ? extra.version
+                    : "2",
+            chainId,
+            verifyingContract: asset,
         };
 
         const types = {
@@ -627,7 +770,7 @@ Question: Approve this payment? Reply ONLY with 'YES' or 'NO'.`
 
         const message = {
             from: this.wallet.address,
-            to: requirement.payTo,
+            to: payTo,
             value: amount,
             validAfter,
             validBefore,
@@ -644,7 +787,7 @@ Question: Approve this payment? Reply ONLY with 'YES' or 'NO'.`
                 signature,
                 authorization: {
                     from: this.wallet.address,
-                    to: requirement.payTo,
+                    to: payTo,
                     value: amount.toString(),
                     validAfter: validAfter.toString(),
                     validBefore: validBefore.toString(),
@@ -654,10 +797,6 @@ Question: Approve this payment? Reply ONLY with 'YES' or 'NO'.`
         };
 
         return Buffer.from(JSON.stringify(payloadObj)).toString("base64");
-    }
-    
-    getApiDetails() {
-        return { apiKey: this.apiKey, haloUrl: this.haloUrl };
     }
 }
 
@@ -680,12 +819,9 @@ export function haloSystem(model: any, config: HaloConfig = {}) {
                     try {
                         return await value.apply(target, args);
                     } catch (error: any) {
-                        // Check for 402
-                        const status = error.response?.status || error.status || 0;
-                        console.log(`🔍 [SDK Debug] Error caught. Status: ${status}, Message: ${error.message}`);
-                        
-                        if (status === 402 || error.message?.includes("402") || error.message?.includes("Payment Required")) {
-                            console.log("⚡ [SDK Debug] 402 Detected! Starting auto-recovery...");
+                        const status =
+                            error?.response?.status ?? error?.status ?? 0;
+                        if (status === 402) {
                             return await handler.autoRecover(error, args, value, target);
                         }
                         throw error;
@@ -709,56 +845,63 @@ class HaloAutoHandler {
         this.autoApprove = !!pk;
     }
 
-    async autoRecover(error: any, args: any[], originalMethod: Function, originalContext: any) {
-        // 1. Extract Requirements
-        let reqData;
-        
-        // Strategy A: Try header from error.response
-        try {
-            const header = error.response?.headers?.get?.('payment-required') || error.response?.headers?.['payment-required'];
-            if (header) {
-                reqData = JSON.parse(Buffer.from(header, 'base64').toString());
-            }
-        } catch (e) { console.log("Failed to extract from header", e); }
-
-        // Strategy B: Try error.errorDetails (Google SDK specific)
-        if (!reqData && error.errorDetails && Array.isArray(error.errorDetails) && error.errorDetails.length > 0) {
-            // Google SDK often puts the details array directly in errorDetails
-            reqData = error.errorDetails[0]; 
-            // If it's the x402 structure directly
-            if (reqData.accepts) {
-                 // Good to go
-            } else if (reqData.x402Version) {
-                // Also good
-            } else {
-                reqData = null;
-            }
-        }
-
-        // Strategy C: Try parsing from error message (Fallback)
-        if (!reqData && error.message) {
-            const jsonMatch = error.message.match(/\[(\{.*\})\]/); // Look for JSON array in message
-            if (jsonMatch && jsonMatch[1]) {
-                try {
-                    reqData = JSON.parse(jsonMatch[1]);
-                } catch (e) { /* ignore */ }
-            }
-        }
-        
+    async autoRecover(
+        error: any,
+        args: any[],
+        originalMethod: Function,
+        originalContext: any
+    ) {
+        const reqData = this.extractPaymentRequired(error);
         if (!reqData) {
-            console.error("Dump Error Object:", JSON.stringify(error, Object.getOwnPropertyNames(error)));
-            throw new Error("Could not extract payment requirements from 402 error");
+            throw new HaloAPIError(
+                "Halo 402 response did not include payment requirements",
+                402
+            );
         }
 
-        const requirement = reqData.accepts ? reqData.accepts[0] : reqData; // Handle both full response and direct requirement
-        const resource = reqData.resource || {};
-        const amountStr = requirement.amount || requirement.maxAmountRequired;
+        const requirement = reqData.accepts.find(
+            (candidate) =>
+                candidate &&
+                typeof candidate === "object" &&
+                candidate.scheme === "exact" &&
+                (candidate.network === "base" ||
+                    (typeof candidate.network === "string" &&
+                        /^eip155:\d+$/.test(candidate.network)))
+        );
+        if (!requirement) {
+            throw new HaloAPIError(
+                "Halo 402 response did not include a supported exact payment",
+                402,
+                reqData
+            );
+        }
+
+        const price =
+            requirement.price && typeof requirement.price === "object"
+                ? requirement.price
+                : {};
+        const amountStr =
+            requirement.amount ??
+            requirement.maxAmountRequired ??
+            price.amount;
+        const resource = reqData.resource;
+        const resourceDescription =
+            resource && typeof resource === "object"
+                ? resource.description ||
+                  resource.url ||
+                  "HALO API request"
+                : typeof resource === "string" && resource.trim()
+                  ? resource.trim()
+                  : "HALO API request";
 
         // 2. Rescue (Free Judgment) or Auto-Approve
         if (this.autoApprove) {
             console.log(`⚡ [AutoPay] Private key provided -> Skipping Judge and auto-approving payment.`);
         } else {
-            const decision = await this.tools.consultJudge(resource.description, amountStr);
+            const decision = await this.tools.consultJudge(
+                resourceDescription,
+                String(amountStr)
+            );
             if (!decision.includes("YES")) throw new Error("Judge denied payment.");
         }
 
@@ -766,37 +909,227 @@ class HaloAutoHandler {
         const signature = await this.tools.signPayment(requirement);
 
         // 4. Retry
-        return this.retry(signature, args, this.tools.getApiDetails());
+        return this.retry(
+            signature,
+            args,
+            originalMethod,
+            originalContext
+        );
     }
 
-    async retry(signature: string, args: any[], apiDetails: { apiKey: string, haloUrl: string }) {
-        const { apiKey, haloUrl } = apiDetails;
-        let contents = args[0];
-        if (typeof contents === 'string') contents = { contents: [{ parts: [{ text: contents }] }] };
-        
-        console.log(`🚀 [Retry] Retrying with payment proof...`);
-        const retryResponse = await fetch(`${haloUrl}/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Payment-Signature": signature
-            },
-            body: JSON.stringify(contents)
-        });
-
-        if (!retryResponse.ok) {
-            const text = await retryResponse.text();
-            throw new Error(`Retry failed: ${text}`);
+    private extractPaymentRequired(
+        error: any
+    ): HaloX402PaymentRequired | null {
+        const responseHeaders = error?.response?.headers;
+        let encodedHeader: unknown;
+        if (responseHeaders?.get) {
+            encodedHeader = responseHeaders.get("payment-required");
+        } else if (
+            responseHeaders &&
+            typeof responseHeaders === "object"
+        ) {
+            const entry = Object.entries(responseHeaders).find(
+                ([name]) => name.toLowerCase() === "payment-required"
+            );
+            encodedHeader = entry?.[1];
+        }
+        if (encodedHeader !== undefined && encodedHeader !== null) {
+            return this.decodePaymentRequiredHeader(encodedHeader);
         }
 
-        const json = await retryResponse.json();
-        
-        // Mimic Google SDK response structure
-        return {
-            response: {
-                text: () => json.candidates?.[0]?.content?.parts?.[0]?.text || ""
-            },
-            ...json
+        const details = error?.errorDetails;
+        if (Array.isArray(details)) {
+            for (const detail of details) {
+                const paymentRequired = this.paymentRequiredFromValue(detail);
+                if (paymentRequired) return paymentRequired;
+            }
+        }
+
+        if (error?.name === "ApiError" && typeof error.message === "string") {
+            try {
+                return this.paymentRequiredFromValue(
+                    JSON.parse(error.message)
+                );
+            } catch {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private decodePaymentRequiredHeader(
+        encodedHeader: unknown
+    ): HaloX402PaymentRequired {
+        if (
+            typeof encodedHeader !== "string" ||
+            !/^[A-Za-z0-9+/_-]+={0,2}$/.test(encodedHeader.trim())
+        ) {
+            throw new HaloAPIError(
+                "Halo 402 payment-required header was invalid",
+                402
+            );
+        }
+
+        try {
+            const decoded = Buffer.from(
+                encodedHeader.trim().replace(/-/g, "+").replace(/_/g, "/"),
+                "base64"
+            ).toString("utf8");
+            const paymentRequired = this.paymentRequiredFromValue(
+                JSON.parse(decoded)
+            );
+            if (!paymentRequired) throw new Error("invalid payload");
+            return paymentRequired;
+        } catch (error) {
+            if (error instanceof HaloAPIError) throw error;
+            throw new HaloAPIError(
+                "Halo 402 payment-required header was invalid",
+                402
+            );
+        }
+    }
+
+    private paymentRequiredFromValue(
+        value: unknown
+    ): HaloX402PaymentRequired | null {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return null;
+        }
+        const record = value as Record<string, unknown>;
+        if (Array.isArray(record.accepts)) {
+            return record as unknown as HaloX402PaymentRequired;
+        }
+        if (
+            record.x402 &&
+            typeof record.x402 === "object" &&
+            !Array.isArray(record.x402) &&
+            Array.isArray((record.x402 as Record<string, unknown>).accepts)
+        ) {
+            return record.x402 as unknown as HaloX402PaymentRequired;
+        }
+        return null;
+    }
+
+    private retry(
+        signature: string,
+        args: any[],
+        originalMethod: Function,
+        originalContext: any
+    ) {
+        const retryArgs = [...args];
+        const request = retryArgs[0];
+
+        if (
+            request &&
+            typeof request === "object" &&
+            !Array.isArray(request) &&
+            Object.prototype.hasOwnProperty.call(request, "model")
+        ) {
+            const originalConfig = request.config;
+            if (
+                originalConfig !== undefined &&
+                (!originalConfig ||
+                    typeof originalConfig !== "object" ||
+                    Array.isArray(originalConfig))
+            ) {
+                throw new HaloAPIError(
+                    "haloSystem can only retry @google/genai requests with an object config"
+                );
+            }
+            const originalHttpOptions = originalConfig?.httpOptions;
+            if (
+                originalHttpOptions !== undefined &&
+                (!originalHttpOptions ||
+                    typeof originalHttpOptions !== "object" ||
+                    Array.isArray(originalHttpOptions))
+            ) {
+                throw new HaloAPIError(
+                    "haloSystem can only retry @google/genai requests with object httpOptions"
+                );
+            }
+
+            retryArgs[0] = {
+                ...request,
+                config: {
+                    ...(originalConfig || {}),
+                    httpOptions: {
+                        ...(originalHttpOptions || {}),
+                        headers: this.paymentHeaders(
+                            originalHttpOptions?.headers,
+                            signature
+                        ),
+                    },
+                },
+            };
+        } else {
+            const originalRequestOptions = retryArgs[1];
+            if (
+                originalRequestOptions !== undefined &&
+                (!originalRequestOptions ||
+                    typeof originalRequestOptions !== "object" ||
+                    Array.isArray(originalRequestOptions))
+            ) {
+                throw new HaloAPIError(
+                    "haloSystem can only retry legacy Google GenAI requests with object request options"
+                );
+            }
+            retryArgs[1] = {
+                ...(originalRequestOptions || {}),
+                customHeaders: this.paymentHeaders(
+                    originalRequestOptions?.customHeaders,
+                    signature
+                ),
+            };
+        }
+
+        console.log(
+            "🚀 [Retry] Retrying the original request with payment proof..."
+        );
+        return originalMethod.apply(originalContext, retryArgs);
+    }
+
+    private paymentHeaders(
+        originalHeaders: unknown,
+        signature: string
+    ): Record<string, string> | Headers {
+        const paymentHeaders: Record<string, string> = {
+            "Payment-Signature": signature,
+            "x-halo-sdk": HALO_SDK_NAME,
+            "x-halo-sdk-version": HALO_SDK_VERSION,
         };
+
+        if (originalHeaders instanceof Headers) {
+            const headers = new Headers(originalHeaders);
+            for (const [name, value] of Object.entries(paymentHeaders)) {
+                headers.set(name, value);
+            }
+            return headers;
+        }
+        if (
+            originalHeaders !== undefined &&
+            (!originalHeaders ||
+                typeof originalHeaders !== "object" ||
+                Array.isArray(originalHeaders))
+        ) {
+            throw new HaloAPIError(
+                "HALO payment retry headers must be an object or Headers"
+            );
+        }
+
+        const headers: Record<string, string> = {};
+        for (const [name, value] of Object.entries(
+            (originalHeaders || {}) as Record<string, string>
+        )) {
+            if (
+                !Object.keys(paymentHeaders).some(
+                    (reserved) =>
+                        reserved.toLowerCase() === name.toLowerCase()
+                )
+            ) {
+                headers[name] = value;
+            }
+        }
+        return { ...headers, ...paymentHeaders };
     }
 }

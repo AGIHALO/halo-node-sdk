@@ -1,7 +1,36 @@
+import { createHash, randomBytes } from "node:crypto";
+
 import { HaloAPIError } from "./errors";
+import { HALO_SDK_VERSION } from "./version";
 
 const DEFAULT_HALO_URL = "https://api.agihalo.com";
 const HALO_NODE_SDK_NAME = "agihalo-node-sdk";
+const PKCE_CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const PKCE_VERIFIER_PATTERN = /^[A-Za-z0-9._~-]{43,128}$/;
+
+export interface HaloPkcePair {
+    verifier: string;
+    challenge: string;
+}
+
+export function generatePkcePair(): HaloPkcePair {
+    const verifier = randomBytes(64).toString("base64url");
+    const challenge = createHash("sha256")
+        .update(verifier, "ascii")
+        .digest("base64url");
+    return { verifier, challenge };
+}
+
+export function generateOAuthState(byteLength = 32): string {
+    if (
+        !Number.isInteger(byteLength) ||
+        byteLength < 16 ||
+        byteLength > 128
+    ) {
+        throw new Error("byteLength must be an integer between 16 and 128");
+    }
+    return randomBytes(byteLength).toString("base64url");
+}
 
 const requiredString = (value: string | undefined, fieldName: string) => {
     if (typeof value !== "string" || value.trim().length === 0) {
@@ -14,6 +43,38 @@ const optionalString = (value: string | undefined) => {
     if (typeof value !== "string") return undefined;
     const cleaned = value.trim();
     return cleaned.length > 0 ? cleaned : undefined;
+};
+
+const optionalBoundedString = (
+    value: string | undefined,
+    fieldName: string,
+    maxLength: number
+) => {
+    const cleaned = optionalString(value);
+    if (cleaned !== undefined && cleaned.length > maxLength) {
+        throw new Error(`${fieldName} must be ${maxLength} characters or less`);
+    }
+    return cleaned;
+};
+
+const requiredPkceChallenge = (value: string | undefined) => {
+    const challenge = requiredString(value, "codeChallenge");
+    if (!PKCE_CHALLENGE_PATTERN.test(challenge)) {
+        throw new Error(
+            "codeChallenge must be a 43-character S256 base64url value"
+        );
+    }
+    return challenge;
+};
+
+const requiredPkceVerifier = (value: string | undefined) => {
+    const verifier = requiredString(value, "codeVerifier");
+    if (!PKCE_VERIFIER_PATTERN.test(verifier)) {
+        throw new Error(
+            "codeVerifier must be 43-128 RFC 7636 unreserved characters"
+        );
+    }
+    return verifier;
 };
 
 const cleanScopes = (scopes: string[] | undefined) => {
@@ -159,6 +220,7 @@ class HaloJsonClient {
                 headers: {
                     Accept: "application/json",
                     "x-halo-sdk": HALO_NODE_SDK_NAME,
+                    "x-halo-sdk-version": HALO_SDK_VERSION,
                     ...headers,
                     ...(body ? { "Content-Type": "application/json" } : {}),
                 },
@@ -345,11 +407,12 @@ export class HaloAuthClient extends HaloJsonClient {
         );
         url.searchParams.set(
             "code_challenge",
-            requiredString(input.codeChallenge, "codeChallenge")
+            requiredPkceChallenge(input.codeChallenge)
         );
         url.searchParams.set("code_challenge_method", "S256");
-        if (optionalString(input.state)) {
-            url.searchParams.set("state", input.state!.trim());
+        const state = optionalBoundedString(input.state, "state", 1024);
+        if (state !== undefined) {
+            url.searchParams.set("state", state);
         }
         return url.toString();
     }
@@ -360,10 +423,7 @@ export class HaloAuthClient extends HaloJsonClient {
         return this.authRequest<T>("POST", "/api/v1/auth/providers/token", {
             body: {
                 code: requiredString(input.code, "code"),
-                code_verifier: requiredString(
-                    input.codeVerifier,
-                    "codeVerifier"
-                ),
+                code_verifier: requiredPkceVerifier(input.codeVerifier),
                 redirect_to: requiredString(
                     input.redirectTo,
                     "redirectTo"
@@ -430,13 +490,14 @@ export class HaloOAuthClient extends HaloJsonClient {
             requiredString(input.redirectUri, "redirectUri")
         );
         url.searchParams.set("scope", cleanScopes(input.scopes)!.join(" "));
-        if (optionalString(input.state)) {
-            url.searchParams.set("state", input.state!.trim());
+        const state = optionalBoundedString(input.state, "state", 512);
+        if (state !== undefined) {
+            url.searchParams.set("state", state);
         }
         if (optionalString(input.codeChallenge)) {
             url.searchParams.set(
                 "code_challenge",
-                input.codeChallenge!.trim()
+                requiredPkceChallenge(input.codeChallenge)
             );
             url.searchParams.set("code_challenge_method", "S256");
         }
@@ -465,9 +526,10 @@ export class HaloOAuthClient extends HaloJsonClient {
             redirect_uri: requiredString(input.redirectUri, "redirectUri"),
             scopes: cleanScopes(input.scopes),
         };
-        if (optionalString(input.state)) body.state = input.state!.trim();
+        const state = optionalBoundedString(input.state, "state", 512);
+        if (state !== undefined) body.state = state;
         if (optionalString(input.codeChallenge)) {
-            body.code_challenge = input.codeChallenge!.trim();
+            body.code_challenge = requiredPkceChallenge(input.codeChallenge);
             body.code_challenge_method = "S256";
         }
         return this.request<T>(
@@ -496,7 +558,7 @@ export class HaloOAuthClient extends HaloJsonClient {
         };
         if (this.clientSecret) body.client_secret = this.clientSecret;
         if (optionalString(codeVerifier)) {
-            body.code_verifier = codeVerifier!.trim();
+            body.code_verifier = requiredPkceVerifier(codeVerifier);
         }
         return this.request<T>(
             "POST",

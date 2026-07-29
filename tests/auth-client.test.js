@@ -1,10 +1,14 @@
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const test = require("node:test");
 
 const {
+    HALO_SDK_VERSION,
     HaloAPIError,
     HaloAuthClient,
     HaloOAuthClient,
+    generateOAuthState,
+    generatePkcePair,
 } = require("../dist/index.js");
 
 const jsonResponse = (status, body) => ({
@@ -58,6 +62,10 @@ test("HaloAuthClient sends project publishable auth requests", async () => {
                 calls[0].options.headers["x-halo-sdk"],
                 "agihalo-node-sdk"
             );
+            assert.equal(
+                calls[0].options.headers["x-halo-sdk-version"],
+                HALO_SDK_VERSION
+            );
             assert.deepEqual(JSON.parse(calls[0].options.body), {
                 email: "user@example.com",
                 password: "Secret123!",
@@ -89,13 +97,15 @@ test("HaloAuthClient builds and exchanges provider PKCE flows", async () => {
                 publishableKey: "pk-project",
                 haloUrl: "https://halo.test",
             });
+            const pkce = generatePkcePair();
+            const state = generateOAuthState();
 
             const authorizeUrl = new URL(
                 auth.buildProviderAuthorizeUrl({
                     provider: "google",
                     redirectTo: "https://app.example.com/auth/callback",
-                    codeChallenge: "challenge-1",
-                    state: "state-1",
+                    codeChallenge: pkce.challenge,
+                    state,
                 })
             );
 
@@ -108,10 +118,11 @@ test("HaloAuthClient builds and exchanges provider PKCE flows", async () => {
                 authorizeUrl.searchParams.get("code_challenge_method"),
                 "S256"
             );
+            assert.equal(authorizeUrl.searchParams.get("state"), state);
 
             await auth.exchangeProviderCode({
                 code: "provider-code",
-                codeVerifier: "verifier-1",
+                codeVerifier: pkce.verifier,
                 redirectTo: "https://app.example.com/auth/callback",
             });
 
@@ -121,7 +132,7 @@ test("HaloAuthClient builds and exchanges provider PKCE flows", async () => {
             );
             assert.deepEqual(JSON.parse(calls[0].options.body), {
                 code: "provider-code",
-                code_verifier: "verifier-1",
+                code_verifier: pkce.verifier,
                 redirect_to: "https://app.example.com/auth/callback",
             });
         }
@@ -137,13 +148,14 @@ test("HaloOAuthClient keeps service authorization and token exchange explicit", 
                 clientSecret: "secret-1",
                 haloUrl: "https://halo.test",
             });
+            const pkce = generatePkcePair();
 
             const authorizeUrl = new URL(
                 oauth.buildAuthorizeUrl({
                     redirectUri: "https://service.example.com/callback",
                     scopes: ["profile", "email"],
                     state: "state-1",
-                    codeChallenge: "challenge-1",
+                    codeChallenge: pkce.challenge,
                 })
             );
             assert.equal(
@@ -155,12 +167,12 @@ test("HaloOAuthClient keeps service authorization and token exchange explicit", 
                 redirectUri: "https://service.example.com/callback",
                 scopes: ["profile", "email"],
                 state: "state-1",
-                codeChallenge: "challenge-1",
+                codeChallenge: pkce.challenge,
             });
             await oauth.exchangeCode(
                 "halo-code",
                 "https://service.example.com/callback",
-                "verifier-1"
+                pkce.verifier
             );
             await oauth.refreshToken("oauth-refresh");
             await oauth.getUserInfo("oauth-access");
@@ -179,7 +191,7 @@ test("HaloOAuthClient keeps service authorization and token exchange explicit", 
                 code: "halo-code",
                 redirect_uri: "https://service.example.com/callback",
                 client_secret: "secret-1",
-                code_verifier: "verifier-1",
+                code_verifier: pkce.verifier,
             });
             assert.deepEqual(JSON.parse(calls[2].options.body), {
                 grant_type: "refresh_token",
@@ -192,6 +204,40 @@ test("HaloOAuthClient keeps service authorization and token exchange explicit", 
                 "Bearer oauth-access"
             );
         }
+    );
+});
+
+test("PKCE and OAuth state helpers match the production contract", async () => {
+    const pkce = generatePkcePair();
+    const expectedChallenge = createHash("sha256")
+        .update(pkce.verifier, "ascii")
+        .digest("base64url");
+
+    assert.ok(pkce.verifier.length >= 43);
+    assert.ok(pkce.verifier.length <= 128);
+    assert.equal(pkce.challenge.length, 43);
+    assert.equal(pkce.challenge, expectedChallenge);
+    assert.ok(generateOAuthState().length >= 22);
+    assert.throws(() => generateOAuthState(15), /between 16 and 128/);
+
+    const auth = new HaloAuthClient({ publishableKey: "pk-project" });
+    assert.throws(
+        () =>
+            auth.buildProviderAuthorizeUrl({
+                provider: "google",
+                redirectTo: "https://app.example.com/auth/callback",
+                codeChallenge: "not-a-valid-challenge",
+            }),
+        /43-character/
+    );
+    await assert.rejects(
+        () =>
+            auth.exchangeProviderCode({
+                code: "provider-code",
+                codeVerifier: "too-short",
+                redirectTo: "https://app.example.com/auth/callback",
+            }),
+        /43-128/
     );
 });
 

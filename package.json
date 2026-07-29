@@ -1,9 +1,22 @@
 {
     "name": "agihalo-node-sdk",
-    "version": "0.1.1",
-    "description": "HALO SDK for Project Authentication, OAuth, Agent Memory, model routing, and x402 payments",
+    "version": "0.2.0",
+    "description": "HALO Node.js SDK for Project Authentication, OAuth, Agent Memory, model routing, and x402 payments",
+    "type": "commonjs",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "require": "./dist/index.js",
+            "default": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist",
+        "README.md",
+        "CHANGELOG.md"
+    ],
     "homepage": "https://docs.agihalo.com/sdks/node/",
     "repository": {
         "type": "git",
@@ -12,16 +25,15 @@
     "engines": {
         "node": ">=18"
     },
+    "sideEffects": false,
     "scripts": {
         "build": "tsc",
-        "test": "npm run build && node --test tests/*.test.js"
+        "test": "npm run build && node --test tests/*.test.js",
+        "prepack": "npm run build"
     },
     "dependencies": {
-        "@google/generative-ai": "^0.24.1",
-        "dotenv": "^17.2.3",
         "ethers": "^6.16.0"
     },
-    
     "devDependencies": {
         "@types/node": "^20.0.0",
         "typescript": "^5.0.0"

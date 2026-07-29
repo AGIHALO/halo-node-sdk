@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+    HALO_SDK_VERSION,
     HaloAPIError,
     HaloMemoryClient,
     MEMORY_RETRIEVE_FUNCTION_NAME,
@@ -58,6 +59,10 @@ test("executeRetrieveFunction posts the expected payload", async () => {
             assert.equal(calls[0].options.headers.Authorization, "Bearer sk-test");
             assert.equal(calls[0].options.headers["Content-Type"], "application/json");
             assert.equal(calls[0].options.headers["x-halo-sdk"], "agihalo-node-sdk");
+            assert.equal(
+                calls[0].options.headers["x-halo-sdk-version"],
+                HALO_SDK_VERSION
+            );
             assert.deepEqual(JSON.parse(calls[0].options.body), {
                 projectKey: "project-a",
                 endUserKey: "end-user-1",
@@ -236,6 +241,7 @@ test("function declaration and legacy headers expose stable names", () => {
         }),
         {
             "x-halo-sdk": "agihalo-node-sdk",
+            "x-halo-sdk-version": HALO_SDK_VERSION,
             "x-halo-project-key": "project-a",
             "x-halo-end-user-key": "end-user-1",
             "x-halo-memory": "capture",
