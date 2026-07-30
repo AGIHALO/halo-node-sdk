@@ -4,6 +4,7 @@ import { HALO_SDK_VERSION } from "./version";
 
 export { HaloAPIError } from "./errors";
 export * from "./auth";
+export * from "./client";
 export { HALO_SDK_VERSION } from "./version";
 
 const DEFAULT_HALO_URL = "https://api.agihalo.com";

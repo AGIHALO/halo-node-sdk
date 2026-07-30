@@ -14,8 +14,9 @@ npm install agihalo-node-sdk
 
 Node.js 18 or newer is required.
 
-## What's included in 0.2.0
+## What's included in 0.3.0
 
+- Supabase-style `createClient(url, publishableKey).auth` session management
 - Project user signup, password sessions, rotating refresh tokens, recovery,
   JWKS, and upstream provider login
 - OAuth App authorization-code, PKCE, refresh-token, and user-info flows
@@ -89,58 +90,67 @@ wallet rotation does not require a Node package update.
 
 ## Project Authentication
 
-Use `HaloAuthClient` in a Node.js application or BFF with the Project
-publishable key. The client returns tokens to your application but never stores
-them. Replace the stored refresh token after every successful refresh because
-HALO rotates it.
+Create the client once with the Project publishable key. The managed Auth
+client stores the browser session, rotates refresh tokens, emits authentication
+state changes, and automatically sends both `apikey` and the current bearer
+access token.
 
 ```typescript
-import { HaloAuthClient } from "agihalo-node-sdk";
+import { createClient } from "agihalo-node-sdk/auth";
 
-const auth = new HaloAuthClient({
-    publishableKey: "pk-project",
-});
-
-const session = await auth.signInWithPassword(
-    "user@example.com",
-    "Secret123!"
+const halo = createClient(
+    "https://api.agihalo.com",
+    "pk-project"
 );
 
-const refreshed = await auth.refreshSession(session.refresh_token);
-const user = await auth.getUser(refreshed.access_token);
+const { data, error } = await halo.auth.signInWithPassword({
+    email: "user@example.com",
+    password: "Secret123!",
+});
+if (error) throw error;
+
+const { data: userData } = await halo.auth.getUser();
+console.log(userData?.user);
 ```
 
-For Google, Apple, GitHub, or Microsoft sign-in, generate an S256 PKCE pair and
-state, retain the verifier and state in the application session, then open the
-provider authorization URL:
+The browser entry point is isolated from the model, Memory, payment, and Node
+runtime modules. Browser sessions persist and auto-refresh by default. Use
+`persistSession: false` for a BFF-managed cookie session.
 
 ```typescript
-import {
-    generateOAuthState,
-    generatePkcePair,
-} from "agihalo-node-sdk";
-
-const pkce = generatePkcePair();
-const state = generateOAuthState();
-
-const authorizationUrl = auth.buildProviderAuthorizeUrl({
-    provider: "google",
-    redirectTo: "https://app.example.com/auth/callback",
-    codeChallenge: pkce.challenge,
-    state,
-});
-
-// After validating the returned state:
-const providerSession = await auth.exchangeProviderCode({
-    code,
-    codeVerifier: pkce.verifier,
-    redirectTo: "https://app.example.com/auth/callback",
-});
+const halo = createClient(
+    "https://api.agihalo.com",
+    "pk-project",
+    {
+        auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+        },
+    }
+);
 ```
 
-In a web application, keep refresh tokens in a Secure, HttpOnly,
-SameSite-protected application cookie behind a BFF. Do not place access or
-refresh tokens in URLs, logs, localStorage, or sessionStorage.
+Google, Apple, GitHub, and Microsoft sign-in use PKCE without a client secret.
+The managed client retains the verifier, validates state, exchanges the
+one-time callback code, and stores the resulting Project session.
+
+```typescript
+const { data, error } = await halo.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+        redirectTo: "https://app.example.com/auth/callback",
+    },
+});
+if (error) throw error;
+```
+
+The publishable key is public application identity, not a secret. Access and
+refresh tokens are bearer credentials. Keep frontend dependencies and CSP
+tight; for the strongest isolation, disable SDK persistence and keep tokens in
+a Secure, HttpOnly, SameSite-protected cookie behind a BFF.
+
+The lower-level `HaloAuthClient` remains available for explicit server-side
+token handling.
 
 Services registered as HALO OAuth Apps use `HaloOAuthClient`. Keep a
 confidential client secret in a trusted server runtime; public clients use PKCE

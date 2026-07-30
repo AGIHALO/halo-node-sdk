@@ -1,4 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
+import { sha256 } from "@noble/hashes/sha256";
+import { randomBytes } from "@noble/hashes/utils";
 
 import { HaloAPIError } from "./errors";
 import { HALO_SDK_VERSION } from "./version";
@@ -7,6 +8,27 @@ const DEFAULT_HALO_URL = "https://api.agihalo.com";
 const HALO_NODE_SDK_NAME = "agihalo-node-sdk";
 const PKCE_CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const PKCE_VERIFIER_PATTERN = /^[A-Za-z0-9._~-]{43,128}$/;
+const BASE64_ALPHABET =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+const encodeBase64Url = (bytes: Uint8Array) => {
+    let encoded = "";
+    for (let index = 0; index < bytes.length; index += 3) {
+        const first = bytes[index];
+        const second = index + 1 < bytes.length ? bytes[index + 1] : 0;
+        const third = index + 2 < bytes.length ? bytes[index + 2] : 0;
+        const value = (first << 16) | (second << 8) | third;
+        encoded += BASE64_ALPHABET[(value >> 18) & 63];
+        encoded += BASE64_ALPHABET[(value >> 12) & 63];
+        if (index + 1 < bytes.length) {
+            encoded += BASE64_ALPHABET[(value >> 6) & 63];
+        }
+        if (index + 2 < bytes.length) {
+            encoded += BASE64_ALPHABET[value & 63];
+        }
+    }
+    return encoded.replace(/\+/g, "-").replace(/\//g, "_");
+};
 
 export interface HaloPkcePair {
     verifier: string;
@@ -14,10 +36,10 @@ export interface HaloPkcePair {
 }
 
 export function generatePkcePair(): HaloPkcePair {
-    const verifier = randomBytes(64).toString("base64url");
-    const challenge = createHash("sha256")
-        .update(verifier, "ascii")
-        .digest("base64url");
+    const verifier = encodeBase64Url(randomBytes(64));
+    const challenge = encodeBase64Url(
+        sha256(new TextEncoder().encode(verifier))
+    );
     return { verifier, challenge };
 }
 
@@ -29,7 +51,7 @@ export function generateOAuthState(byteLength = 32): string {
     ) {
         throw new Error("byteLength must be an integer between 16 and 128");
     }
-    return randomBytes(byteLength).toString("base64url");
+    return encodeBase64Url(randomBytes(byteLength));
 }
 
 const requiredString = (value: string | undefined, fieldName: string) => {

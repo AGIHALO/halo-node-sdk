@@ -7,6 +7,7 @@ const {
     HaloAPIError,
     HaloAuthClient,
     HaloOAuthClient,
+    createClient,
     generateOAuthState,
     generatePkcePair,
 } = require("../dist/index.js");
@@ -262,6 +263,257 @@ test("Authentication errors retain HALO error codes", async () => {
                     return true;
                 }
             );
+        }
+    );
+});
+
+test("createClient manages a Supabase-style auth session", async () => {
+    const user = {
+        id: "user-1",
+        projectId: "project-1",
+        email: "user@example.com",
+        displayName: "Ada",
+        status: "active",
+        providers: ["email"],
+        emailConfirmedAt: "2026-07-30T00:00:00.000Z",
+        userMetadata: {},
+        appMetadata: {},
+        createdAt: "2026-07-30T00:00:00.000Z",
+        updatedAt: "2026-07-30T00:00:00.000Z",
+    };
+    const makeSession = (suffix) => ({
+        access_token: `access-${suffix}`,
+        refresh_token: `refresh-${suffix}`,
+        token_type: "bearer",
+        expires_in: 3600,
+        expires_at: "2099-07-30T01:00:00.000Z",
+        user,
+        session: {
+            id: `session-${suffix}`,
+            projectId: "project-1",
+            authUserId: "user-1",
+            expiresAt: "2099-07-30T01:00:00.000Z",
+            lastSeenAt: "2026-07-30T00:00:00.000Z",
+            revokedAt: null,
+            createdAt: "2026-07-30T00:00:00.000Z",
+        },
+    });
+    const stored = new Map();
+    const storage = {
+        getItem: async (key) => stored.get(key) ?? null,
+        setItem: async (key, value) => stored.set(key, value),
+        removeItem: async (key) => stored.delete(key),
+    };
+    let refreshCount = 0;
+
+    await withMockFetch(
+        async (url, options) => {
+            if (url.includes("grant_type=password")) {
+                return jsonResponse(200, makeSession("1"));
+            }
+            if (url.includes("grant_type=refresh_token")) {
+                refreshCount += 1;
+                return jsonResponse(200, makeSession("2"));
+            }
+            if (url.endsWith("/api/v1/auth/user")) {
+                return jsonResponse(200, { user });
+            }
+            if (url.endsWith("/api/v1/auth/logout")) {
+                return jsonResponse(200, {});
+            }
+            return jsonResponse(500, { error: "unexpected request" });
+        },
+        async (calls) => {
+            const halo = createClient(
+                "https://halo.test/",
+                "pk-project",
+                {
+                    auth: {
+                        autoRefreshToken: false,
+                        storage,
+                        storageKey: "test-halo-session",
+                    },
+                }
+            );
+            const events = [];
+            const { data: listener } = halo.auth.onAuthStateChange(
+                (event) => events.push(event)
+            );
+
+            const signedIn = await halo.auth.signInWithPassword({
+                email: "user@example.com",
+                password: "Secret123!",
+            });
+            assert.equal(signedIn.error, null);
+            assert.equal(signedIn.data.session.access_token, "access-1");
+            assert.equal(
+                JSON.parse(stored.get("test-halo-session")).refresh_token,
+                "refresh-1"
+            );
+
+            const current = await halo.auth.getSession();
+            assert.equal(current.data.session.access_token, "access-1");
+
+            const currentUser = await halo.auth.getUser();
+            assert.equal(currentUser.data.user.id, "user-1");
+
+            const refreshed = await halo.auth.refreshSession();
+            assert.equal(refreshed.data.session.refresh_token, "refresh-2");
+            assert.equal(refreshCount, 1);
+
+            const signedOut = await halo.auth.signOut();
+            assert.equal(signedOut.error, null);
+            assert.equal(stored.has("test-halo-session"), false);
+            assert.deepEqual(
+                events,
+                [
+                    "INITIAL_SESSION",
+                    "SIGNED_IN",
+                    "TOKEN_REFRESHED",
+                    "SIGNED_OUT",
+                ]
+            );
+            listener.subscription.unsubscribe();
+
+            const userCall = calls.find(({ url }) =>
+                url.endsWith("/api/v1/auth/user")
+            );
+            assert.equal(userCall.options.headers.apikey, "pk-project");
+            assert.equal(
+                userCall.options.headers.Authorization,
+                "Bearer access-1"
+            );
+            const logoutCall = calls.find(({ url }) =>
+                url.endsWith("/api/v1/auth/logout")
+            );
+            assert.equal(logoutCall.options.headers.apikey, "pk-project");
+            assert.equal(
+                logoutCall.options.headers.Authorization,
+                "Bearer access-2"
+            );
+        }
+    );
+});
+
+test("createClient returns authentication failures as data and error", async () => {
+    await withMockFetch(
+        async () =>
+            jsonResponse(401, {
+                error: "Invalid login credentials",
+                code: "INVALID_CREDENTIALS",
+            }),
+        async () => {
+            const halo = createClient(
+                "https://halo.test",
+                "pk-project",
+                {
+                    auth: {
+                        autoRefreshToken: false,
+                        persistSession: false,
+                    },
+                }
+            );
+            const result = await halo.auth.signInWithPassword({
+                email: "user@example.com",
+                password: "wrong",
+            });
+            assert.equal(result.data, null);
+            assert.ok(result.error instanceof HaloAPIError);
+            assert.equal(result.error.code, "INVALID_CREDENTIALS");
+        }
+    );
+});
+
+test("createClient manages provider PKCE without exposing a client secret", async () => {
+    const user = {
+        id: "user-1",
+        projectId: "project-1",
+        email: "user@example.com",
+    };
+    const session = {
+        access_token: "provider-access",
+        refresh_token: "provider-refresh",
+        token_type: "bearer",
+        expires_in: 3600,
+        expires_at: "2099-07-30T01:00:00.000Z",
+        user,
+        session: {
+            id: "session-provider",
+            projectId: "project-1",
+            authUserId: "user-1",
+            expiresAt: "2099-07-30T01:00:00.000Z",
+            lastSeenAt: "2026-07-30T00:00:00.000Z",
+            revokedAt: null,
+            createdAt: "2026-07-30T00:00:00.000Z",
+        },
+    };
+    const stored = new Map();
+    const storage = {
+        getItem: (key) => stored.get(key) ?? null,
+        setItem: (key, value) => stored.set(key, value),
+        removeItem: (key) => stored.delete(key),
+    };
+
+    await withMockFetch(
+        async () => jsonResponse(200, session),
+        async (calls) => {
+            const halo = createClient(
+                "https://halo.test",
+                "pk-project",
+                {
+                    auth: {
+                        autoRefreshToken: false,
+                        storage,
+                        storageKey: "test-provider-session",
+                    },
+                }
+            );
+            const started = await halo.auth.signInWithOAuth({
+                provider: "google",
+                options: {
+                    redirectTo:
+                        "https://app.example.com/auth/callback",
+                    skipBrowserRedirect: true,
+                },
+            });
+            assert.equal(started.error, null);
+            const authorizationUrl = new URL(started.data.url);
+            const state = authorizationUrl.searchParams.get("state");
+            assert.equal(
+                authorizationUrl.searchParams.get("apikey"),
+                "pk-project"
+            );
+            assert.equal(
+                authorizationUrl.searchParams.get(
+                    "code_challenge_method"
+                ),
+                "S256"
+            );
+            assert.ok(stored.has("test-provider-session-pkce"));
+
+            const exchanged =
+                await halo.auth.exchangeCodeForSession(
+                    "one-time-code",
+                    state
+                );
+            assert.equal(exchanged.error, null);
+            assert.equal(
+                exchanged.data.session.access_token,
+                "provider-access"
+            );
+            assert.equal(
+                stored.has("test-provider-session-pkce"),
+                false
+            );
+            const body = JSON.parse(calls[0].options.body);
+            assert.equal(body.code, "one-time-code");
+            assert.match(body.code_verifier, /^[A-Za-z0-9_-]{43,128}$/);
+            assert.equal(
+                body.redirect_to,
+                "https://app.example.com/auth/callback"
+            );
+            assert.equal(calls[0].options.headers.apikey, "pk-project");
+            assert.equal("client_secret" in body, false);
         }
     );
 });

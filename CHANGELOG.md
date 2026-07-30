@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 - 2026-07-30
+
+- Added `createClient(url, publishableKey).auth` with Supabase-style
+  `{ data, error }` results.
+- Added browser session persistence, serialized refresh rotation, automatic
+  `apikey` and bearer headers, and authentication state subscriptions.
+- Added managed upstream-provider PKCE login and callback exchange without a
+  browser client secret.
+- Added a browser-safe `agihalo-node-sdk/auth` entry point.
+- Kept `HaloAuthClient` and `HaloOAuthClient` backward compatible for explicit
+  server-side token handling.
+
 ## 0.2.0 - 2026-07-29
 
 - Added production Project Authentication and upstream identity-provider
