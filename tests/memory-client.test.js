@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
     HALO_SDK_VERSION,
+    HaloAgentAccessClient,
     HaloAPIError,
     HaloMemoryClient,
     MEMORY_RETRIEVE_FUNCTION_NAME,
@@ -249,61 +250,75 @@ test("function declaration and legacy headers expose stable names", () => {
     );
 });
 
-test("Memory OAuth helpers keep the project and end user scope explicit", async () => {
+test("Agent Access creates an immutable Link request and executes by installationId", async () => {
     await withMockFetch(
         async (_url, options) =>
             jsonResponse(options.method === "POST" ? 201 : 200, { ok: true }),
         async (calls) => {
-            const client = new HaloMemoryClient({
+            const client = new HaloAgentAccessClient({
                 apiKey: "sk-test",
                 projectKey: "oem project",
                 haloUrl: "https://halo.test",
             });
 
-            await client.listConnectors();
-            await client.registerOAuthProvider({
-                providerKey: "google",
-                clientId: "google-client",
-                clientSecret: "google-secret",
-                redirectUri:
-                    "https://connect.oem.test/api/v1/memory/oauth/callback/google",
+            await client.createLink({
+                clientAgentId: "11111111-1111-4111-8111-111111111111",
+                endUser: { type: "external", externalUserId: "end-user-1" },
+                requiredCapabilities: [{
+                    capability: "calendar.event.read",
+                    resourceSelectors: [{ type: "calendar", ids: ["primary"] }],
+                }],
+                optionalCapabilities: [],
+                returnUrl: "https://app.example.com/halo/complete",
+                state: "csrf-state",
             });
-            await client.registerOAuthReturnUri({
-                returnUri: "oemapp://oauth/complete",
-                completionMode: "mobile_deep_link",
+            await client.getLinkSession("22222222-2222-4222-8222-222222222222");
+            await client.listInstallations();
+            await client.createApproval({
+                installationId: "33333333-3333-4333-8333-333333333333",
+                functionId: "google.calendar.event.create",
+                input: { calendarId: "primary", summary: "Demo" },
+                idempotencyKey: "calendar-create-operation-1",
             });
-            await client.startOAuth({
-                scopeId: "scope-1",
-                connectorId: "google.calendar",
-                completionMode: "mobile_deep_link",
-                returnUri: "oemapp://oauth/complete",
+            await client.execute({
+                installationId: "33333333-3333-4333-8333-333333333333",
+                functionId: "google.calendar.event.create",
+                input: { calendarId: "primary", summary: "Demo" },
+                idempotencyKey: "calendar-create-operation-1",
+                approvalId: "44444444-4444-4444-8444-444444444444",
             });
-            await client.getOAuthSession("session-1");
-            await client.listConnections("scope-1");
-            await client.refreshConnection("scope-1", "connection-1");
+            await client.revokeInstallation("33333333-3333-4333-8333-333333333333");
 
             assert.equal(
                 calls[0].url,
-                "https://halo.test/api/v1/memory/projects/oem%20project/connectors"
+                "https://halo.test/api/v1/agent-access/projects/oem%20project/link-sessions"
             );
-            assert.equal(calls[0].options.method, "GET");
-            assert.equal(calls[1].options.method, "PUT");
-            assert.deepEqual(JSON.parse(calls[1].options.body), {
-                clientId: "google-client",
-                clientSecret: "google-secret",
-                redirectUri:
-                    "https://connect.oem.test/api/v1/memory/oauth/callback/google",
+            assert.equal(calls[0].options.method, "POST");
+            assert.equal(calls[0].options.headers.Authorization, "Bearer sk-test");
+            assert.deepEqual(JSON.parse(calls[0].options.body), {
+                clientAgentId: "11111111-1111-4111-8111-111111111111",
+                endUser: { type: "external", externalUserId: "end-user-1" },
+                requiredCapabilities: [{
+                    capability: "calendar.event.read",
+                    resourceSelectors: [{ type: "calendar", ids: ["primary"] }],
+                }],
+                optionalCapabilities: [],
+                returnUrl: "https://app.example.com/halo/complete",
+                state: "csrf-state",
             });
-            assert.equal(calls[3].options.method, "POST");
+            assert.equal(calls[1].options.method, "GET");
+            assert.equal(calls[2].options.method, "GET");
             assert.deepEqual(JSON.parse(calls[3].options.body), {
-                connectorId: "google.calendar",
-                completionMode: "mobile_deep_link",
-                returnUri: "oemapp://oauth/complete",
+                installationId: "33333333-3333-4333-8333-333333333333",
+                functionId: "google.calendar.event.create",
+                input: { calendarId: "primary", summary: "Demo" },
+                idempotencyKey: "calendar-create-operation-1",
             });
             assert.equal(
-                calls[6].url,
-                "https://halo.test/api/v1/memory/projects/oem%20project/scopes/scope-1/connections/connection-1/refresh"
+                calls[5].url,
+                "https://halo.test/api/v1/agent-access/projects/oem%20project/installations/33333333-3333-4333-8333-333333333333"
             );
+            assert.equal(calls[5].options.method, "DELETE");
         }
     );
 });

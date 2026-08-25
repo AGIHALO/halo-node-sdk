@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 - 2026-08-25
+
+- Added `HaloAgentAccessClient` for trusted-backend Link creation, Link status,
+  installation listing/revoke, input-bound approval, and execution.
+- Renamed the Project Authentication OAuth App concept to Identity OAuth Client
+  in public documentation.
+- Removed Project-owned Memory OAuth helper methods after the fixed
+  `LEGACY_APP_CONNECT_RETIRED` retirement.
+
 ## 0.3.0 - 2026-07-30
 
 - Added `createClient(url, publishableKey).auth` with Supabase-style

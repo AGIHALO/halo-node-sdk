@@ -79,6 +79,47 @@ export interface HaloMemoryClientConfig {
     timeoutMs?: number;
 }
 
+export interface HaloAgentAccessClientConfig {
+    apiKey: string;
+    projectKey: string;
+    haloUrl?: string;
+    timeoutMs?: number;
+}
+
+export interface AgentAccessResourceSelector {
+    type: string;
+    ids: string[];
+}
+
+export interface AgentAccessCapabilityRequest {
+    capability: "calendar.event.read" | "calendar.event.create" | "drive.file.read" | "drive.file.write";
+    resourceSelectors: AgentAccessResourceSelector[];
+}
+
+export type AgentAccessEndUser =
+    | { type: "project_auth"; accessToken: string }
+    | { type: "external"; externalUserId: string };
+
+export interface CreateAgentAccessLinkInput {
+    clientAgentId: string;
+    endUser: AgentAccessEndUser;
+    requiredCapabilities: AgentAccessCapabilityRequest[];
+    optionalCapabilities: AgentAccessCapabilityRequest[];
+    returnUrl: string;
+    state: string;
+}
+
+export interface AgentAccessApprovalInput {
+    installationId: string;
+    functionId: string;
+    input: unknown;
+    idempotencyKey?: string;
+}
+
+export interface AgentAccessExecutionInput extends AgentAccessApprovalInput {
+    approvalId?: string;
+}
+
 export interface ExecuteRetrieveFunctionInput {
     endUserKey: string;
     sessionData: unknown;
@@ -103,31 +144,6 @@ export interface RetrieveMemoryInput {
     cursor?: string;
     includeRaw?: boolean;
     includeDisabledTopics?: boolean;
-}
-
-export type MemoryOAuthCompletionMode =
-    | "web_redirect"
-    | "mobile_deep_link"
-    | "device_poll";
-
-export interface RegisterMemoryOAuthProviderInput {
-    providerKey: string;
-    clientId: string;
-    clientSecret: string;
-    redirectUri: string;
-}
-
-export interface RegisterMemoryOAuthReturnUriInput {
-    returnUri: string;
-    completionMode: "web_redirect" | "mobile_deep_link";
-}
-
-export interface StartMemoryOAuthInput {
-    scopeId: string;
-    connectorId: string;
-    optionalScopes?: string[];
-    completionMode: MemoryOAuthCompletionMode;
-    returnUri?: string;
 }
 
 export type MemoryDeleteTarget = "project" | "scope" | "user" | "topic" | "raw";
@@ -417,99 +433,6 @@ export class HaloMemoryClient {
         return this.delete({ target: "raw", ...input });
     }
 
-    async listConnectors(): Promise<any> {
-        return this.get(
-            `/api/v1/memory/projects/${encodeURIComponent(this.projectKey)}/connectors`
-        );
-    }
-
-    async listOAuthProviders(): Promise<any> {
-        return this.get(
-            `/api/v1/memory/projects/${encodeURIComponent(this.projectKey)}/oauth/providers`
-        );
-    }
-
-    async registerOAuthProvider(
-        input: RegisterMemoryOAuthProviderInput
-    ): Promise<any> {
-        return this.put(
-            `/api/v1/memory/projects/${encodeURIComponent(this.projectKey)}/oauth/providers/${encodeURIComponent(cleanMemoryValue(input.providerKey, "providerKey"))}`,
-            {
-                clientId: cleanMemoryValue(input.clientId, "clientId"),
-                clientSecret: cleanMemoryValue(input.clientSecret, "clientSecret"),
-                redirectUri: cleanMemoryValue(input.redirectUri, "redirectUri"),
-            }
-        );
-    }
-
-    async listOAuthReturnUris(): Promise<any> {
-        return this.get(
-            `/api/v1/memory/projects/${encodeURIComponent(this.projectKey)}/oauth/return-uris`
-        );
-    }
-
-    async registerOAuthReturnUri(
-        input: RegisterMemoryOAuthReturnUriInput
-    ): Promise<any> {
-        return this.post(
-            `/api/v1/memory/projects/${encodeURIComponent(this.projectKey)}/oauth/return-uris`,
-            {
-                returnUri: cleanMemoryValue(input.returnUri, "returnUri"),
-                completionMode: input.completionMode,
-            }
-        );
-    }
-
-    async startOAuth(input: StartMemoryOAuthInput): Promise<any> {
-        const scopeId = cleanMemoryValue(input.scopeId, "scopeId");
-        const payload: Record<string, unknown> = {
-            connectorId: cleanMemoryValue(input.connectorId, "connectorId"),
-            completionMode: input.completionMode,
-        };
-        if (input.optionalScopes !== undefined) {
-            if (
-                !Array.isArray(input.optionalScopes) ||
-                input.optionalScopes.some(
-                    (scope) => !cleanOptionalString(scope)
-                )
-            ) {
-                throw new Error(
-                    "optionalScopes must be an array of non-empty strings"
-                );
-            }
-            payload.optionalScopes = input.optionalScopes;
-        }
-        if (input.returnUri !== undefined) {
-            payload.returnUri = cleanMemoryValue(input.returnUri, "returnUri");
-        }
-        return this.post(
-            `/api/v1/memory/projects/${encodeURIComponent(this.projectKey)}/scopes/${encodeURIComponent(scopeId)}/oauth/start`,
-            payload
-        );
-    }
-
-    async getOAuthSession(sessionId: string): Promise<any> {
-        return this.get(
-            `/api/v1/memory/projects/${encodeURIComponent(this.projectKey)}/oauth/sessions/${encodeURIComponent(cleanMemoryValue(sessionId, "sessionId"))}`
-        );
-    }
-
-    async listConnections(scopeId: string): Promise<any> {
-        return this.get(
-            `/api/v1/memory/projects/${encodeURIComponent(this.projectKey)}/scopes/${encodeURIComponent(cleanMemoryValue(scopeId, "scopeId"))}/connections`
-        );
-    }
-
-    async refreshConnection(
-        scopeId: string,
-        connectionId: string
-    ): Promise<any> {
-        return this.post(
-            `/api/v1/memory/projects/${encodeURIComponent(this.projectKey)}/scopes/${encodeURIComponent(cleanMemoryValue(scopeId, "scopeId"))}/connections/${encodeURIComponent(cleanMemoryValue(connectionId, "connectionId"))}/refresh`,
-            {}
-        );
-    }
-
     private headers(): Record<string, string> {
         return {
             "Authorization": `Bearer ${this.apiKey}`,
@@ -523,16 +446,12 @@ export class HaloMemoryClient {
         return this.request("POST", path, payload);
     }
 
-    private async put(path: string, payload: Record<string, unknown>): Promise<any> {
-        return this.request("PUT", path, payload);
-    }
-
     private async get(path: string): Promise<any> {
         return this.request("GET", path);
     }
 
     private async request(
-        method: "GET" | "POST" | "PUT",
+        method: "GET" | "POST",
         path: string,
         payload?: Record<string, unknown>
     ): Promise<any> {
@@ -592,6 +511,160 @@ export class HaloMemoryClient {
             message: `Halo API request failed with status ${response.status}`,
             body: text,
         };
+    }
+}
+
+const cleanAgentAccessValue = (value: string | undefined, fieldName: string): string => {
+    if (!value || value.trim().length === 0) {
+        throw new Error(`${fieldName} is required for Halo Agent Access`);
+    }
+    return value.trim();
+};
+
+const validateCapabilityRequests = (
+    value: AgentAccessCapabilityRequest[] | undefined,
+    fieldName: string
+): AgentAccessCapabilityRequest[] => {
+    if (!Array.isArray(value)) {
+        throw new Error(`${fieldName} must be an array for Halo Agent Access`);
+    }
+    value.forEach((request, requestIndex) => {
+        cleanAgentAccessValue(request?.capability, `${fieldName}[${requestIndex}].capability`);
+        if (!Array.isArray(request?.resourceSelectors) || request.resourceSelectors.length === 0) {
+            throw new Error(`${fieldName}[${requestIndex}].resourceSelectors is required for Halo Agent Access`);
+        }
+        request.resourceSelectors.forEach((selector, selectorIndex) => {
+            cleanAgentAccessValue(selector?.type, `${fieldName}[${requestIndex}].resourceSelectors[${selectorIndex}].type`);
+            if (!Array.isArray(selector?.ids) || selector.ids.length === 0) {
+                throw new Error(`${fieldName}[${requestIndex}].resourceSelectors[${selectorIndex}].ids is required for Halo Agent Access`);
+            }
+            selector.ids.forEach((id, idIndex) =>
+                cleanAgentAccessValue(id, `${fieldName}[${requestIndex}].resourceSelectors[${selectorIndex}].ids[${idIndex}]`)
+            );
+        });
+    });
+    return value;
+};
+
+export class HaloAgentAccessClient {
+    private apiKey: string;
+    private projectKey: string;
+    private haloUrl: string;
+    private timeoutMs: number;
+
+    constructor(config: HaloAgentAccessClientConfig) {
+        this.apiKey = cleanAgentAccessValue(config.apiKey, "apiKey");
+        this.projectKey = cleanAgentAccessValue(config.projectKey, "projectKey");
+        this.haloUrl = cleanAgentAccessValue(config.haloUrl || DEFAULT_HALO_URL, "haloUrl").replace(/\/$/, "");
+        this.timeoutMs = config.timeoutMs ?? 30_000;
+    }
+
+    async createLink(input: CreateAgentAccessLinkInput): Promise<any> {
+        const clientAgentId = cleanAgentAccessValue(input.clientAgentId, "clientAgentId");
+        if (!input.endUser || (input.endUser.type !== "project_auth" && input.endUser.type !== "external")) {
+            throw new Error("endUser.type must be project_auth or external for Halo Agent Access");
+        }
+        if (input.endUser.type === "project_auth") {
+            cleanAgentAccessValue(input.endUser.accessToken, "endUser.accessToken");
+        } else {
+            cleanAgentAccessValue(input.endUser.externalUserId, "endUser.externalUserId");
+        }
+        return this.request("POST", "/link-sessions", {
+            clientAgentId,
+            endUser: input.endUser,
+            requiredCapabilities: validateCapabilityRequests(input.requiredCapabilities, "requiredCapabilities"),
+            optionalCapabilities: validateCapabilityRequests(input.optionalCapabilities, "optionalCapabilities"),
+            returnUrl: cleanAgentAccessValue(input.returnUrl, "returnUrl"),
+            state: cleanAgentAccessValue(input.state, "state"),
+        });
+    }
+
+    async getLinkSession(sessionId: string): Promise<any> {
+        return this.request("GET", `/link-sessions/${encodeURIComponent(cleanAgentAccessValue(sessionId, "sessionId"))}`);
+    }
+
+    async listInstallations(): Promise<any> {
+        return this.request("GET", "/installations");
+    }
+
+    async revokeInstallation(installationId: string): Promise<any> {
+        return this.request("DELETE", `/installations/${encodeURIComponent(cleanAgentAccessValue(installationId, "installationId"))}`);
+    }
+
+    async createApproval(input: AgentAccessApprovalInput): Promise<any> {
+        return this.request("POST", "/approvals", this.executionPayload(input));
+    }
+
+    async execute(input: AgentAccessExecutionInput): Promise<any> {
+        const payload = this.executionPayload(input);
+        if (input.approvalId !== undefined) {
+            payload.approvalId = cleanAgentAccessValue(input.approvalId, "approvalId");
+        }
+        return this.request("POST", "/executions", payload);
+    }
+
+    private executionPayload(input: AgentAccessApprovalInput): Record<string, unknown> {
+        const payload: Record<string, unknown> = {
+            installationId: cleanAgentAccessValue(input.installationId, "installationId"),
+            functionId: cleanAgentAccessValue(input.functionId, "functionId"),
+            input: input.input,
+        };
+        if (input.idempotencyKey !== undefined) {
+            payload.idempotencyKey = cleanAgentAccessValue(input.idempotencyKey, "idempotencyKey");
+        }
+        return payload;
+    }
+
+    private async request(
+        method: "GET" | "POST" | "DELETE",
+        suffix: string,
+        payload?: Record<string, unknown>
+    ): Promise<any> {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+        let response: Response;
+        const project = encodeURIComponent(this.projectKey);
+
+        try {
+            response = await fetch(`${this.haloUrl}/api/v1/agent-access/projects/${project}${suffix}`, {
+                method,
+                headers: {
+                    "Authorization": `Bearer ${this.apiKey}`,
+                    "Content-Type": "application/json",
+                    "x-halo-sdk": HALO_SDK_NAME,
+                    "x-halo-sdk-version": HALO_SDK_VERSION,
+                },
+                body: payload === undefined ? undefined : JSON.stringify(payload),
+                signal: controller.signal,
+            });
+        } catch (error: any) {
+            if (error?.name === "AbortError") {
+                throw new HaloAPIError(`Halo API request timed out after ${this.timeoutMs}ms`);
+            }
+            throw new HaloAPIError(`Halo API request failed: ${error?.message || String(error)}`);
+        } finally {
+            clearTimeout(timeout);
+        }
+
+        const bodyText = await response.text().catch(() => "");
+        let body: unknown = bodyText;
+        if (bodyText) {
+            try {
+                body = JSON.parse(bodyText);
+            } catch {
+                body = bodyText;
+            }
+        }
+        if (!response.ok) {
+            const message = body && typeof body === "object" && "error" in body
+                ? String((body as { error: unknown }).error)
+                : `Halo API request failed with status ${response.status}`;
+            throw new HaloAPIError(message, response.status, body);
+        }
+        if (!bodyText || typeof body === "string") {
+            throw new HaloAPIError("Halo API response was not valid JSON", response.status, body);
+        }
+        return body;
     }
 }
 

@@ -1,7 +1,7 @@
 # HALO Node.js SDK
 
-The official Node.js client for HALO Project Authentication, OAuth Apps,
-long-term Memory, and server-driven x402 payments.
+The official Node.js client for HALO Project Authentication, Identity OAuth
+Clients, Agent Access, long-term Memory, and server-driven x402 payments.
 
 > **👼 proper noun [HALO (Hyper-Available Lifeline Oracle)]**:
 > A protocol where a dormant agent receives a temporary intelligence boost ("HALO") to survive a resource crunch (402 Error).
@@ -14,12 +14,13 @@ npm install agihalo-node-sdk
 
 Node.js 18 or newer is required.
 
-## What's included in 0.3.0
+## What's included in 0.4.0
 
 - Supabase-style `createClient(url, publishableKey).auth` session management
 - Project user signup, password sessions, rotating refresh tokens, recovery,
   JWKS, and upstream provider login
-- OAuth App authorization-code, PKCE, refresh-token, and user-info flows
+- Identity OAuth Client authorization-code, PKCE, refresh-token, and user-info flows
+- Server-only Agent Access Link, installation, approval, execution, and revoke flows
 - Direct Memory capture, retrieve, deletion, and function execution
 - Server-driven x402 signing that uses the `payTo`, network, asset, amount, and
   timeout returned by `https://api.agihalo.com`
@@ -152,7 +153,7 @@ a Secure, HttpOnly, SameSite-protected cookie behind a BFF.
 The lower-level `HaloAuthClient` remains available for explicit server-side
 token handling.
 
-Services registered as HALO OAuth Apps use `HaloOAuthClient`. Keep a
+Services registered as HALO Identity OAuth Clients use `HaloOAuthClient`. Keep a
 confidential client secret in a trusted server runtime; public clients use PKCE
 without a secret.
 
@@ -180,6 +181,64 @@ const tokens = await oauth.exchangeCode(
 );
 const profile = await oauth.getUserInfo(tokens.access_token);
 ```
+
+## Agent Access
+
+Use `HaloAgentAccessClient` only in the partner's trusted backend. Its API key
+must never be placed in a browser. Project Authentication stays independent;
+the Link request may identify a user with either a verified Project access token
+or the partner's own `externalUserId`.
+
+```typescript
+import { HaloAgentAccessClient } from "agihalo-node-sdk";
+
+const access = new HaloAgentAccessClient({
+    apiKey: process.env.HALO_API_KEY!,
+    projectKey: "customer-project-a",
+});
+
+const link = await access.createLink({
+    clientAgentId: "service-uuid",
+    endUser: { type: "external", externalUserId: "partner-user-123" },
+    requiredCapabilities: [{
+        capability: "calendar.event.read",
+        resourceSelectors: [{ type: "calendar", ids: ["primary"] }],
+    }],
+    optionalCapabilities: [],
+    returnUrl: "https://app.example.com/halo/complete",
+    state: "partner-csrf-state",
+});
+
+// Send link.connectUrl to the browser. After HALO returns, query from the
+// trusted backend and take installationId only from this response.
+const completed = await access.getLinkSession(link.session.id);
+const installationId = completed.session.installationId;
+```
+
+Read capabilities execute directly after final Link consent. Create/write
+capabilities first create an input-bound approval, wait for the My Agent owner
+to approve it in `/my-agent/access`, and then execute with `approvalId`.
+
+```typescript
+const approval = await access.createApproval({
+    installationId,
+    functionId: "google.calendar.event.create",
+    input: { calendarId: "primary", summary: "Partner demo" },
+    idempotencyKey: "calendar-create-operation-uuid",
+});
+
+const result = await access.execute({
+    installationId,
+    functionId: "google.calendar.event.create",
+    input: { calendarId: "primary", summary: "Partner demo" },
+    idempotencyKey: "calendar-create-operation-uuid",
+    approvalId: approval.approval.id,
+});
+```
+
+Partners do not register a Connected App OAuth Client with HALO. HALO owns and
+operates Connected App OAuth, token custody, incremental consent, allowlisted
+capability adapters, and audit. Raw Connected App tokens are never returned.
 
 ## Long-Term Memory
 
